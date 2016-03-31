@@ -97,6 +97,7 @@ struct bio {
 	bio_end_io_t		*bi_end_io;
 
 	void			*bi_private;
+	void			*bi_private1;
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 	struct bio_integrity_payload *bi_integrity;  /* data integrity */
 #endif
