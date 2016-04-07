@@ -9,15 +9,21 @@
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
-#include "encryption-request.h"
-#include "config_encryption_disk.h"
- 
+#include "eqm_encryption.h"
+
+#define LOCAL_ENCRYPTION_ALGORITHM 0 /*是否使用本地算法*/
 #undef NLog
 #undef ELog
 #define ELog(fmt,arg...) printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);
 #define NLog(n,fmt,arg...)	do{	static int i = 0;if(i++ < n){printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);}}while(0)
+
+#if LOCAL_ENCRYPTION_ALGORITHM > 0
 static char* encryption(unsigned char *buf, int len);
 static char* decryption(unsigned char *buf, int len);
+#else
+static int encryption_in_network(struct request_queue* q, struct bio* bio);
+static int decryption_in_network(struct request_queue* q, struct bio* bio);
+#endif
 static int be_encryption_disk(const char* partition_name);
 
 static int be_encryption_disk(const char* partition_name)
@@ -127,11 +133,8 @@ static struct bio* copy_bio(struct request_queue *q, struct bio* org_bio,
  */
 void encryption_request(struct request_queue *q, struct bio **bio)
 {
-	struct bio_vec *from;
-	struct page *page;
-	struct bio *new_bio = NULL; /* 在这里要重新创建一个bio交给底层处理 */
-	unsigned char* buf = NULL;
-	int i = 0;
+	
+	struct bio *new_bio = NULL; /* 在这里要重新创建一个bio交给底层处理 */	
 	char b[BDEVNAME_SIZE]={0}; 
 	
  	if ((*bio)->bi_private1) /* 此已经加密过 */
@@ -159,8 +162,12 @@ void encryption_request(struct request_queue *q, struct bio **bio)
 	new_bio = copy_bio(q, *bio, encryption_end_io_write);
 	if(new_bio == *bio)
 		return ;
-	NLog(30,"begin encryption disk: %s", b);
-	
+	//NLog(300,"begin encryption disk: %s", b);
+#if LOCAL_ENCRYPTION_ALGORITHM > 0	
+	struct bio_vec *from;
+	struct page *page;
+	unsigned char* buf = NULL;
+	int i = 0;
 	bio_for_each_segment(from, new_bio, i) { 
 		page = from->bv_page;
  		/* page在高端内存中 */
@@ -169,8 +176,11 @@ void encryption_request(struct request_queue *q, struct bio **bio)
 		else /* page在底端内存中 */
 			buf = page_address(page) + from->bv_offset;
 		/* 对buf加密 */
-		encryption(buf, from->bv_len);			
+		encryption(buf, from->bv_len);		
 	}
+#else
+	encryption_in_network(q, new_bio);
+#endif
 	/* 将加密过的bio请求返回 */
 	*bio = new_bio; 
 }
@@ -184,20 +194,22 @@ void encryption_request(struct request_queue *q, struct bio **bio)
  */
 void decryption_reuqest(struct request_queue *q, struct bio *bio)
 {
-	struct bio_vec *from;
-	struct page *page;
-	unsigned char* buf = NULL;
-	int i = 0;
+
 	 /* 是否是读操作 */
 	if(bio_data_dir(bio) != READ || 
 		!bio->bi_private1 || 
 		!be_encryption_disk(bio->bi_private1)) /* 是否是需要加密的磁盘 */
 		return ; 
 	
-	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));
+	//NLog(300,"decryption disk: %s", (const char*)(bio->bi_private1));
 	kfree(bio->bi_private1);
 	bio->bi_private1 = NULL;
 	/* 对bio中的所有数据解密处理 */
+#if LOCAL_ENCRYPTION_ALGORITHM > 0	
+	struct bio_vec *from;
+	struct page *page;
+	unsigned char* buf = NULL;
+	int i = 0;
 	bio_for_each_segment(from, bio, i) {
 		page = from->bv_page;
 		flush_dcache_page(page);
@@ -208,12 +220,18 @@ void decryption_reuqest(struct request_queue *q, struct bio *bio)
 			buf = page_address(page) + from->bv_offset;
 		/* buf解密 */
 		decryption(buf, from->bv_len);	
-	}
+	}	
+
+//decryption_in_network(q, bio);
+#else
+	decryption_in_network(q, bio);
+#endif
 	
 }
 EXPORT_SYMBOL(encryption_request);
 EXPORT_SYMBOL(decryption_reuqest);
 
+#if LOCAL_ENCRYPTION_ALGORITHM > 0	
 /**ltl
  * 功能:加密算法接口
  * 参数:
@@ -228,7 +246,6 @@ static char* encryption(unsigned char *buf, int len)
 
 	return buf;
 }
-
 /**ltl
  * 功能:解密算法接口
  * 参数:
@@ -242,3 +259,54 @@ static char* decryption(unsigned char *buf, int len)
 		buf[i] -= 1;
 	return buf;
 }
+#else
+
+static int encryption_in_network(struct request_queue* q, struct bio* bio)
+{
+	struct bio_vec *from;
+	struct page *page;
+	struct bio *new_bio = bio; /* 在这里要重新创建一个bio交给底层处理 */
+	unsigned char* buf = NULL;
+	int i = 0;
+	bio_for_each_segment(from, new_bio, i) { 
+		page = from->bv_page;
+ 		/* page在高端内存中 */
+		if (page_to_pfn(page) > queue_bounce_pfn(q))
+			buf = kmap(page) + from->bv_offset;
+		else /* page在底端内存中 */
+			buf = page_address(page) + from->bv_offset;
+		/* 将需要加密的数据加入到列表中 */
+		add_encryption_data(buf, from->bv_len, page);		
+		//ext_encryption(buf, from->bv_len);
+		wake_to_network_encryption(); /* 唤醒用户进程去读取数据，并加密处理 */
+	} 
+	//wake_to_network_encryption(); /* 唤醒用户进程去读取数据，并加密处理 */
+	//clear_encryption_data(); /* 行清空列表 */
+	return 0;
+}
+
+static int decryption_in_network(struct request_queue* q, struct bio* bio)
+{
+	struct bio_vec *from;
+	struct page *page;
+	unsigned char* buf = NULL;
+	int i = 0;
+	bio_for_each_segment(from, bio, i) {
+		page = from->bv_page;
+		flush_dcache_page(page);
+		/* page在高端内存中 */
+		if (page_to_pfn(page) > queue_bounce_pfn(q))
+			buf = kmap(page) + from->bv_offset;
+		else /* page在底端内存中 */
+			buf = page_address(page) + from->bv_offset;
+		/* buf解密 */
+		//ext_decryption(buf, from->bv_len);	
+		/* 将需要加密的数据加入到列表中 */
+		add_decryption_data(buf, from->bv_len);		
+		//ext_encryption(buf, from->bv_len);
+		wake_to_network_decryption(); /* 唤醒用户进程去读取数据，并加密处理 */
+	}
+	return 0;
+}
+
+#endif

@@ -27,7 +27,7 @@
 #include <linux/kernel.h>
 #include <linux/rwsem.h>
 #include <linux/slab.h>
-#include "config_encryption_disk.h"
+#include "eqm_encryption.h"
 
 #define ENCRYTION_MAX_NAME 64
 
@@ -40,7 +40,7 @@ struct encryption_disk {
 	int 	be_free;
 };
 #define MAX_ENCRYPTION_DISK_COUNT	30	/* 加密磁盘的最大个数 */
-static struct encryption_disk disk_name[MAX_ENCRYPTION_DISK_COUNT];
+static struct encryption_disk eqm_disk_name[MAX_ENCRYPTION_DISK_COUNT];
 
 static int be_parse_cmdline = 1;
 
@@ -59,15 +59,15 @@ static int find_free_disk_entry(void)
 	int i = 0;
 	for (i = 0; i < MAX_ENCRYPTION_DISK_COUNT; i++)
 	{
-		if(disk_name[i].be_free == 0) {			
-			disk_name[i].be_free = 1;
+		if(eqm_disk_name[i].be_free == 0) {			
+			eqm_disk_name[i].be_free = 1;
 			return i;
 		}
 	}
 	return -1;
 }
 
-static void insert_disk_name_list(const char* partition_name)
+static void insert_eqm_disk_name_list(const char* partition_name)
 {
 	struct encryption_disk * pos = NULL;
 	int i = 0;
@@ -75,9 +75,9 @@ static void insert_disk_name_list(const char* partition_name)
 		return ;
 	
 	i = find_free_disk_entry();	
-	strcpy(disk_name[i].name, partition_name);
+	strcpy(eqm_disk_name[i].name, partition_name);
 	printk(KERN_DEBUG"[%s] insert partition name [%s].\n",__func__ , partition_name);
-	INIT_LIST_HEAD(&disk_name[i].list);
+	INIT_LIST_HEAD(&eqm_disk_name[i].list);
 	
 	//ELock();
 	list_for_each_entry(pos, &encryption_disk_list, list) {
@@ -86,7 +86,7 @@ static void insert_disk_name_list(const char* partition_name)
 			return ;
 		}
 	}
-	list_add_tail(&disk_name[i].list, &encryption_disk_list);
+	list_add_tail(&eqm_disk_name[i].list, &encryption_disk_list);
 	//EUnlock();
 }
 
@@ -102,17 +102,17 @@ static int  encryption_disk_setup(char *str)
 	
 	while(p && (q = strstr(p,","))) {
 		*q = '\0';
-		insert_disk_name_list(p);
+		insert_eqm_disk_name_list(p);
 		p = q + 1;
 	}
-	insert_disk_name_list(p) ;
+	insert_eqm_disk_name_list(p) ;
 	
 	return 1;
 }
 
 __setup("encryption_disk_name=", encryption_disk_setup);
 
-static void delete_disk_name_list(const char* partition_name)
+static void delete_eqm_disk_name_list(const char* partition_name)
 {
 	struct encryption_disk * pos = NULL;
 	if(!partition_name)
@@ -134,10 +134,10 @@ static void delete_encryption_disk(char* str)
 	char* p = str, *q = NULL; 
 	while(p && (q = strstr(p,","))) {
 		*q = '\0';
-		delete_disk_name_list(p);
+		delete_eqm_disk_name_list(p);
 		p = q + 1;
 	}
-	delete_disk_name_list(p) ;
+	delete_eqm_disk_name_list(p) ;
 }
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
@@ -259,7 +259,7 @@ static int __init encryption_disk_init_proc(void)
 	return ret;
 }
 
-static void __exit encrytion_disk_destroy_proc(void)
+static void __exit encryption_disk_destroy_proc(void)
 {
 	//struct list_head *v;
 	struct encryption_disk *disk, *tmp_disk;
@@ -279,13 +279,9 @@ static void __exit encrytion_disk_destroy_proc(void)
 	
 }
 
-#if 0
+
 module_init(encryption_disk_init_proc);
 module_exit(encryption_disk_destroy_proc);
-#else
-subsys_initcall(encryption_disk_init_proc);
-#endif
-
 
 MODULE_AUTHOR("xiaosan.li <lixiaoshan_18899@163.com>");
 MODULE_DESCRIPTION("encryption disk for kernel 2.6.32");

@@ -32,7 +32,7 @@
 #include <trace/events/block.h>
 
 #include "blk.h"
-#include "encryption-request.h"
+#include "eqm_encryption.h"
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_remap);
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_rq_remap);
