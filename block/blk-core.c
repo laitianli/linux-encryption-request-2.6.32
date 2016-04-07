@@ -32,6 +32,7 @@
 #include <trace/events/block.h>
 
 #include "blk.h"
+#include "encryption-request.h"
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_remap);
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_rq_remap);
@@ -156,6 +157,9 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 		if (bio_integrity(bio))
 			bio_integrity_advance(bio, nbytes);
 
+		if(blk_fs_request(rq))
+			decryption_reuqest(q, bio);
+		
 		if (bio->bi_size == 0)
 			bio_endio(bio, error);
 	} else {
@@ -1451,6 +1455,8 @@ static inline void __generic_make_request(struct bio *bio)
 
 		if (should_fail_request(bio))
 			goto end_io;
+		
+		encryption_request(q, &bio);
 
 		/*
 		 * If this device has partitions, remap block n
