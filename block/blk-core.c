@@ -157,11 +157,24 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 		if (bio_integrity(bio))
 			bio_integrity_advance(bio, nbytes);
 
-		if(blk_fs_request(rq))
-			decryption_reuqest(q, bio);
-		
+	
 		if (bio->bi_size == 0)
+		{	
+			/* 让其在线程里处理，要把bio加入到列表中，在线程里遍历列表 */		
+			if(blk_fs_request(rq)) {
+				int err_code = 0;
+#if 0			
+				err_code = decryption_reuqest(q, bio);
+				if(err_code)
+					bio_endio(bio, -EIO);
+#else
+				err_code = decryption_reuqest_ex(q, bio);
+				if(err_code == 1) /* 加密的磁盘已经处理过，无须再调用bio_endio */
+					return ;
+#endif			
+			}
 			bio_endio(bio, error);
+		}
 	} else {
 
 		/*
@@ -1455,8 +1468,9 @@ static inline void __generic_make_request(struct bio *bio)
 
 		if (should_fail_request(bio))
 			goto end_io;
-		
-		encryption_request(q, &bio);
+
+		if(encryption_request(q, &bio))
+			goto end_io;
 
 		/*
 		 * If this device has partitions, remap block n

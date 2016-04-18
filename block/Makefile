@@ -7,7 +7,7 @@ obj-$(CONFIG_BLOCK) := elevator.o blk-core.o blk-tag.o blk-sysfs.o \
 			blk-exec.o blk-merge.o blk-softirq.o blk-timeout.o \
 			blk-iopoll.o ioctl.o genhd.o scsi_ioctl.o \
 			config_encryption_disk.o encryption-request.o \
-			eqm_encryption_mmap.o eqm_decryption_mmap.o
+			eqm_decryption_mmap.o eqm_encryption_mmap.o
 
 obj-$(CONFIG_BLK_DEV_BSG)	+= bsg.o
 obj-$(CONFIG_IOSCHED_NOOP)	+= noop-iosched.o

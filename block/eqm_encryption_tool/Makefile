@@ -1,9 +1,20 @@
-all: main
+obj=main
+all: $(obj)
 
-main:
-	gcc -o main eqm_app.c -lpthread
+CFLAGS=-g -lpthread
 
+files=eqm_client.o eqm-mount.o eqm_sig.o
+
+$(obj):$(files)
+	$(CC) -o $@ $(files) $(CFLAGS)
+#	$(CC) -o $@ $< $(CFLAGS)
+
+
+
+$(filter %.o, $(files)): %.o : %.c
+	$(CC) -c  $< -o $@
 clean:
-	rm -rf main 
+	rm -rf $(object) $(files)
+
 
 

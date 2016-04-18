@@ -98,6 +98,7 @@ struct bio {
 
 	void			*bi_private;
 	void			*bi_private1;
+	struct list_head list;
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 	struct bio_integrity_payload *bi_integrity;  /* data integrity */
 #endif
