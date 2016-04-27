@@ -1,34 +1,14 @@
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/mm_types.h>
-#include <linux/mm.h>
-#include <linux/slab.h>
-#include <linux/gfp.h>
-#include <asm/uaccess.h>
-#include <linux/fs.h>
-#include <linux/miscdevice.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/poll.h>
-#include <linux/list.h>
-#include <asm/io.h>
-#include <linux/mutex.h>
-#include <linux/interrupt.h>
-#include <linux/spinlock.h>
-#include <linux/preempt.h>
-#include <linux/syscalls.h>
-
-#include "eqm_encryption.h"
-
-#define MISC_EQM_DECRYPTION_NAME  "eqm-decryption"
-
+/**ltl
+ * 功能: 此文件主要是将解密的数据映射到用户空间，同时等待用户空间的返回。
+ */
+#include "eqm_encryption.h" 
 static wait_queue_head_t eqm_decryption_qh; 
 static wait_queue_head_t eqm_decryption_complete_qh;
 static atomic_t be_eqm_decryption_read;
 static LIST_HEAD(g_list_eqm_data);
 static spinlock_t g_de_data_spinlock;
 static struct eqm_data *gp_de_data = NULL;
+static atomic_t eqm_network_status;
 
 static DEFINE_MUTEX(g_de_data_mutex);
 
@@ -66,7 +46,7 @@ static void eqm_wake_up_function(void* data)
 	wake_up_interruptible(&eqm_decryption_complete_qh);	
 }
 
-int send_decryption_data_to_network(unsigned char* buf, unsigned int len)
+int send_decryption_data_to_network(struct page* ppage,  unsigned int len, unsigned int offset)
 {
 	int err_code = 0;
 	if(!gp_de_data)
@@ -74,8 +54,9 @@ int send_decryption_data_to_network(unsigned char* buf, unsigned int len)
 	
 	mutex_lock(&g_de_data_mutex);
 	spin_lock(&g_de_data_spinlock);
-	gp_de_data->buf = buf;
 	gp_de_data->len = len;	
+	gp_de_data->ppage = ppage;
+	gp_de_data->offset = offset;
 	gp_de_data->err_code = 0;
 	spin_unlock(&g_de_data_spinlock);
 		
@@ -84,8 +65,7 @@ int send_decryption_data_to_network(unsigned char* buf, unsigned int len)
 	wake_up_interruptible(&eqm_decryption_qh); 
 	/* 等待eqm_wake_up_function函数被执行到 */
 	wait_event_interruptible(eqm_decryption_complete_qh, !atomic_read(&be_eqm_decryption_read));
-	
-	gp_de_data->buf = NULL;
+	gp_de_data->ppage = NULL;
 	gp_de_data->len = 0;	
 	err_code = gp_de_data->err_code;
 	gp_de_data->err_code = 0;
@@ -94,12 +74,16 @@ int send_decryption_data_to_network(unsigned char* buf, unsigned int len)
 }
 EXPORT_SYMBOL(send_decryption_data_to_network);
 
+/* 获取当前的网络状态 */
+int get_network_status(void)
+{
+	return atomic_read(&eqm_network_status);
+}
+EXPORT_SYMBOL(get_network_status);
 
 void clear_decryption_data(void)
 {
-
 	spin_lock(&g_de_data_spinlock);
-	gp_de_data->buf = NULL;
 	gp_de_data->len = 0;
 	gp_de_data->err_code = 0;	
 	spin_unlock(&g_de_data_spinlock);
@@ -135,7 +119,8 @@ static unsigned int eqm_decryption_poll(struct file* pf, struct poll_table_struc
 static void eqm_decryption_vm_close(struct vm_area_struct * area)
 {
 	int error_code = 0;
-	eqm_wake_up_function(&error_code);
+	/* 唤醒内核进程 */
+	eqm_wake_up_function(&error_code); 
 }
 
 static int eqm_decryption_mmap(struct file* pf, struct vm_area_struct* vma)
@@ -144,11 +129,11 @@ static int eqm_decryption_mmap(struct file* pf, struct vm_area_struct* vma)
 
 	vma->vm_ops = &eqm_vm_ops;
 	if (remap_pfn_range(vma, vma->vm_start, 
-			virt_to_phys(gp_de_data->buf) >> PAGE_SHIFT, vma->vm_end - vma->vm_start, 
+			page_to_pfn(gp_de_data->ppage), vma->vm_end - vma->vm_start, 
 			vma->vm_page_prot)) {
 			spin_unlock(&g_de_data_spinlock);
 			return -EAGAIN;
-	}
+		}
   	spin_unlock(&g_de_data_spinlock);	
 	return 0;
 }
@@ -159,10 +144,19 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 	switch (cmd)
 	{
 	case MISC_EQM_GET_DATA_LENGTH:
+	{
+		struct eqm_data_info info;
 		spin_lock(&g_de_data_spinlock);
-		put_user(gp_de_data->len, argp);
+		info.len = gp_de_data->len;
+		info.offset = gp_de_data->offset;	
+		//put_user(gp_de_data->len, argp);
 		spin_unlock(&g_de_data_spinlock);
+		if(copy_to_user(argp, &info, sizeof(struct eqm_data_info))) {
+			printk("[Error]=copy_to_user error.\n");
+			return -EINVAL;
+		}
 		break;
+	}
 	case MISC_EQM_GET_PAGE_SIZE:
 		{
 			unsigned long page_size = PAGE_SIZE;
@@ -173,18 +167,25 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 		{
 			unsigned int status = 0;
 			get_user(status, argp);
+			
 			if(status == 1) /* net ok*/
 			{/* 重新识别磁盘分区(去调用config_encryption_disk.c中的接口) */
-				/*
-				 * fd = sys_open("/dev/sdb", 0, 0);
-				 * sys_ioctl(fd, BLKRRPART, 0);
-				 */
+				atomic_set(&eqm_network_status, 1);				
 			}
+			else
+				atomic_set(&eqm_network_status, 0);
 			break;
 		}
 	case MISC_EQM_GET_DISK_PARTITION:
 		{
-			int fd = sys_open("/dev/sdb", 0, 0);
+			char fullname[256] = {0};
+			int fd = 0;
+			if(copy_from_user(fullname, argp, sizeof(fullname)-1))
+				return -EINVAL;
+
+			printk(KERN_INFO"fullname=%s (cmd: MISC_EQM_GET_DISK_PARTITION)\n", fullname);
+			
+			fd = sys_open(fullname, 0, 0);
 			sys_ioctl(fd, BLKRRPART, 0);
 			break;
 		}
@@ -202,7 +203,7 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 		break;
 		}
 	default:
-		printk(KERN_INFO "Unkown command id=%d\n", cmd);
+		printk(KERN_INFO "[%s] Unkown command id=%d\n", __func__, cmd);
 	}
 	return 0;
 }
@@ -222,6 +223,7 @@ static int __init eqm_decryption_module_init(void)
 	init_waitqueue_head(&eqm_decryption_complete_qh);
 	
 	atomic_set(&be_eqm_decryption_read, 0);
+	atomic_set(&eqm_network_status, 0);
 
     ret = misc_register(&eqm_decryption_dev);
 	if(ret)

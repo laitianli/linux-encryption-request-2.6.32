@@ -3,9 +3,10 @@
 
 struct mount_info
 {
-	char dev[256];
-	char mount_point[256];
-	char fs_type[10];
+	char dev[256];			/* 设备路径 */
+	char mount_point[256];	/* 挂载点 */
+	char fs_type[10];	/* 文件系统名 */
+	char lov_name[50];	/* 逻辑卷名 */
 };
 
 static struct mount_info g_mount[30] = {0};
@@ -13,7 +14,7 @@ static struct mount_info g_mount[30] = {0};
 int read_mount_info(char** argv,const char* config_name)
 {
 	if(!config_name || !argv) {
-		printf("[Error] config name is null\n");
+		PLog("[Error] config name is null\n");
 		return -1;
 	}
 	char exe_path[1024] = {0}, config_path[1024] = {0};
@@ -28,7 +29,7 @@ int read_mount_info(char** argv,const char* config_name)
 	sprintf(config_path, "%s/%s", exe_path, config_name);
 	FILE* pf = fopen(config_path, "r");
 	if (pf <= 0) {
-		printf("[error] open file [%s] failed.\n", config_path);
+		PLog("[error] open file [%s] failed.\n", config_path);
 		return -1;
 	}
 	char *p = NULL, *q = NULL;
@@ -39,10 +40,10 @@ int read_mount_info(char** argv,const char* config_name)
 		if(resultbuf[0] == '#')
 			continue;
 		 
-		sscanf(resultbuf, "%s\t%s\t%s", 
-			g_mount[i].dev,g_mount[i].mount_point, g_mount[i].fs_type);
+		sscanf(resultbuf, "%s\t%s\t%s\t%s", 
+			g_mount[i].dev,g_mount[i].mount_point, g_mount[i].fs_type, g_mount[i].lov_name);
 
-		printf("%s:%s:%s\n", g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
+		PLog("%s:%s:%s:%s\n", g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type, g_mount[i].lov_name);
 		i++;
 	}
 	fclose(pf);
@@ -50,6 +51,11 @@ int read_mount_info(char** argv,const char* config_name)
 	return 0;
 }
 
+int vgchange_encryption_disk(void)
+{
+	int ret = 0;
+	int i = 0;
+}
 
 int mount_encryption_disk(void)
 {
@@ -57,13 +63,23 @@ int mount_encryption_disk(void)
 	int i = 0;
 	while(strlen(g_mount[i].dev))
 	{
+		if(strncmp(g_mount[i].lov_name, "NULL", strlen("NULL"))) {
+			char cmdbuf[256] = {0};
+			sprintf(cmdbuf, "vgchange -a y %s", g_mount[i].lov_name);
+			ret = system(cmdbuf);
+			if (ret < 0) {
+				PLog("[Error] run cmd \"%s\" failed.", cmdbuf);
+				i++;
+				continue;
+			}
+		}
 		ret= mount(g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type, 0, NULL);
 		if(ret < 0){
-			printf("[Error] mount [%s] at [%s] failed. filesystem type [%s]\n",
+			PLog("[Error] mount [%s] at [%s] failed. filesystem type [%s]\n",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
 		}
 		else
-			printf("mount [%s] at [%s] success. filesystem type [%s]\n",
+			PLog("mount [%s] at [%s] success. filesystem type [%s]\n",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
 		i++;
 	}
@@ -78,34 +94,65 @@ int umount_encryption_disk(void)
 	{
 		ret= umount(g_mount[i].mount_point);
 		if(ret < 0){
-			printf("[Error] umount [%s] at [%s] failed. filesystem type [%s]\n",
+			PLog("[Error] umount [%s] at [%s] failed. filesystem type [%s]\n",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
 		}
 		else
-			printf("umount [%s] at [%s] success. filesystem type [%s]\n",
+			PLog("umount [%s] at [%s] success. filesystem type [%s]\n",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
 		i++;
 	}
 	return 0;
 }
 
-
-int get_disk_partition(void)
+/**ltl
+ * 功能: 重新获取主盘的分区
+ * 参数: fullname->主盘路径(/dev/sdb)
+ * 返回值:
+ * 说明:
+ */
+int get_disk_partition(const char *fullname)
 {
+#if 1
 	int ret = 0;
 	int fd = open(EQM_DECRYPTION_DEVICE, O_RDWR);
 	if (fd <= 0) {
-		printf("[error] open file [%s] failed.\n", EQM_DECRYPTION_DEVICE);
+		PLog("[error] open file [%s] failed.\n", EQM_DECRYPTION_DEVICE);
 		return -1;
 	}
-
-	ret = ioctl(fd, MISC_EQM_GET_DISK_PARTITION, 0);
+	if(!fullname) {
+		PLog("[error] fullname is null.\n");
+		goto ERROR;
+	}
+	
+	ret = ioctl(fd, MISC_EQM_GET_DISK_PARTITION, fullname);
 	if (fd < 0) {
-		printf("[error] get partition failed. cmd=MISC_EQM_GET_DISK_PARTITION\n", EQM_DECRYPTION_DEVICE);
+		PLog("[error] get partition failed. cmd=MISC_EQM_GET_DISK_PARTITION\n");
 		return -1;
 	}
-
+ERROR:
 	close(fd);
+#else
+	int ret = 0;
+	int fd = open(fullname, O_RDWR);
+	if (fd <= 0) {
+		PLog("[error] open file [%s] failed.\n", fullname);
+		return -1;
+	}
+	if(!fullname) {
+		PLog("[error] fullname is null.\n");
+		goto ERROR;
+	}
+	
+	ret = ioctl(fd, BLKRRPART, 0);
+	if (fd < 0) {
+		PLog("[error] get partition failed. cmd=BLKRRPART\n");
+		return -1;
+	}
+	ERROR:
+	close(fd);
+#endif
+
 	return 0;
 }
 

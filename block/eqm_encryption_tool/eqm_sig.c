@@ -8,7 +8,9 @@
 #include <sys/stat.h> 
 #include <time.h>
 
-void init_deamon(void) 
+static int is_deamon = 0;
+
+int init_deamon(void) 
 { 
     int pid; 
     int i;
@@ -34,22 +36,25 @@ void init_deamon(void)
     //是第二子进程，继续 
     //第二子进程不再是会话组长 
 
-    for(i=0;i< getdtablesize();++i)//关闭打开的文件描述符 
+    for(i=0;i< /*getdtablesize()*/3;++i)//关闭打开的文件描述符 
         close(i); 
     chdir("/tmp");//改变工作目录到/tmp 
     umask(0);//重设文件创建掩模 
-    return; 
+    return 0; 
 }
 
 void sigint_handler(int sig)
 {
-	
+	umount_encryption_disk();
+	set_network_status(0);
+	PLog("revc signal (sig=%d) exit eqm client.\n", sig);
 	exit(0); 
 }
 
-int setup_signal(void)
+int setup_signal(int is_deamon)
 {
-//	init_deamon();
+	if(is_deamon)
+		init_deamon();
 	signal(SIGINT, &sigint_handler);
-
+	return 0;
 }

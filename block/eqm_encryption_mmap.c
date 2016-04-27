@@ -1,23 +1,7 @@
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/mm_types.h>
-#include <linux/mm.h>
-#include <linux/slab.h>
-#include <linux/gfp.h>
-#include <asm/uaccess.h>
-#include <linux/fs.h>
-#include <linux/miscdevice.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/poll.h>
-#include <linux/list.h>
-#include <asm/io.h>
-#include <linux/spinlock.h>
-
+/**ltl
+ * 功能: 此文件主要是将加密的数据映射到用户空间，同时等待用户空间的返回。
+ */
 #include "eqm_encryption.h"
-
-#define MISC_EQM_ENCRYPTION_NAME  "eqm-encryption"
 
 static wait_queue_head_t eqm_encryption_qh; 
 static wait_queue_head_t eqm_complete_qh;
@@ -52,14 +36,25 @@ static struct vm_operations_struct eqm_vm_ops = {
 	.close = eqm_encryption_vm_close,
 };
 
-
+/**ltl
+ * 功能: 当映射到用户空间的数据经过加密后，调用此接口唤醒内核进程
+ * 参数: data	->存入错误码
+ * 返回值:
+ * 说明:
+ */
 static void eqm_wake_up_function(void* data)
 {
 	gpdata->err_code = *(int*)data;
  	atomic_set(&be_eqm_encryption_read, 0);
 	wake_up_interruptible(&eqm_complete_qh);
 }
-int send_encryption_data_to_network(unsigned char* buf, unsigned int len)
+/**ltl
+ * 功能: 将数据映射到用户空间，同时等待加密返回。
+ * 参数:
+ * 返回值:
+ * 说明:
+ */
+int send_encryption_data_to_network(struct page* ppage,  unsigned int len, unsigned int offset)
 {
 	int err_code = 0;
 	if(!gpdata)
@@ -67,8 +62,9 @@ int send_encryption_data_to_network(unsigned char* buf, unsigned int len)
 	
 	mutex_lock(&g_data_mutex);
 	spin_lock(&g_data_spinlock);
-	gpdata->buf = buf;
 	gpdata->len = len;
+	gpdata->ppage = ppage;
+	gpdata->offset = offset;
 	gpdata->err_code = 0;
 	spin_unlock(&g_data_spinlock);
 	
@@ -78,7 +74,7 @@ int send_encryption_data_to_network(unsigned char* buf, unsigned int len)
 	/* 等待eqm_wake_up_function函数被执行到 */
 	wait_event_interruptible(eqm_complete_qh, atomic_read(&be_eqm_encryption_read)==0);
 	err_code = gpdata->err_code;
-	gpdata->buf = NULL;
+	gpdata->ppage = NULL;
 	gpdata->len = 0;
 	gpdata->err_code = 0; 
 	mutex_unlock(&g_data_mutex);
@@ -90,7 +86,7 @@ EXPORT_SYMBOL(send_encryption_data_to_network);
 void clear_encryption_data(void)
 {
 	spin_lock(&g_data_spinlock); 
-	gpdata->buf = NULL;
+
 	gpdata->len = 0;
 	gpdata->err_code = 0;	
 	spin_unlock(&g_data_spinlock);
@@ -111,7 +107,13 @@ static int eqm_encryption_release(struct inode* inode, struct file* file)
 	printk("[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
 	return 0;
 }
- 
+
+/**ltl
+ * 功能: poll接口
+ * 参数:
+ * 返回值:
+ * 说明: 当用户空间调用poll时会执行。
+ */
 static unsigned int eqm_encryption_poll(struct file* pf, struct poll_table_struct* table)
 {
 	unsigned int mask = 0;
@@ -122,22 +124,33 @@ static unsigned int eqm_encryption_poll(struct file* pf, struct poll_table_struc
  
 	return mask;
 }
+/**ltl
+ * 功能: 内存区域的close接口
+ * 参数:
+ * 返回值:
+ * 说明: 当用户空间调用munmap时会执行。
+ */
 static void eqm_encryption_vm_close(struct vm_area_struct * area)
 {
 	int err_code = 0;
 	eqm_wake_up_function(&err_code);
 }
+/**ltl
+ * 功能: 内存映射接口
+ * 参数:
+ * 返回值:
+ * 说明: 当用户空间调用mmap时会执行。
+ */
 static int eqm_encryption_mmap(struct file* pf, struct vm_area_struct* vma)
 {	
 	vma->vm_ops = &eqm_vm_ops;
 	spin_lock(&g_data_spinlock);
 	if (remap_pfn_range(vma, vma->vm_start, 
-			virt_to_phys(gpdata->buf) >> PAGE_SHIFT, vma->vm_end - vma->vm_start, 
+			page_to_pfn(gpdata->ppage), vma->vm_end - vma->vm_start, 
 			vma->vm_page_prot)) {
-			//spin_unlock(&g_data_spinlock);
-			mutex_unlock(&g_data_mutex);
+			spin_unlock(&g_data_spinlock);
 			return -EAGAIN;
-		}	
+		}
  	spin_unlock(&g_data_spinlock);
 	
 	return 0;
@@ -149,27 +162,23 @@ static int eqm_encryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 	switch (cmd)
 	{
 	case MISC_EQM_GET_DATA_LENGTH:
-		spin_lock(&g_data_spinlock);	
-		put_user(gpdata->len, argp);
+	{
+		struct eqm_data_info info;
+		spin_lock(&g_data_spinlock);
+		info.len = gpdata->len;
+		info.offset = gpdata->offset;		
+		//put_user(gpdata->len, argp);
 		spin_unlock(&g_data_spinlock);
+		if(copy_to_user(argp, &info, sizeof(struct eqm_data_info))) {
+			printk("[Error]=copy_to_user error.\n");
+			return -EINVAL;
+		}
 		break;
+	}
 	case MISC_EQM_GET_PAGE_SIZE:
 		{
 			unsigned long page_size = PAGE_SIZE;
 			put_user(page_size, argp);
-			break;
-		}
-	case MISC_EQM_NET_STATUS: /* 网络状态 */
-		{
-			unsigned int status = 0;
-			get_user(status, argp);
-			if(status == 1) /* net ok*/
-			{/* 重新识别磁盘分区(去调用config_encryption_disk.c中的接口) */
-				/*
-				 * fd = sys_open(name, 0, 0);
-				 * sys_ioctl(fd, BLKRRPART, 0);
-				 */
-			}
 			break;
 		}
 	case MISC_EQM_ENCRYPTION_FAILED:
@@ -180,7 +189,7 @@ static int eqm_encryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 		break;
 		}
 	default:
-		printk(KERN_INFO "Unkown command id=%d\n", cmd);
+		printk(KERN_INFO "[%s] Unkown command id=%d\n", __func__, cmd);
 		return -1;
 	}
 	return 0;

@@ -1,0 +1,70 @@
+#!/bin/sh
+#chkconfig: 2345 99 02
+#description:eqmd
+#processname: /usr/sbin/encryption_client
+#pidfile: /etc/sysconfig/eqmd
+#
+### BEGIN INIT INFO
+# Provides: eqmd
+# Required-Start:  $network 
+# Required-Stop: $network
+# Should-Start: $network
+# Should-Stop: $network
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: Start up the eqmd server daemon
+# Description:       eqmd is a protocol for secure remote shell access.
+#		     This service starts up the OpenSSH server daemon.
+### END INIT INFO
+. /etc/rc.d/init.d/functions
+
+program=/usr/sbin/encryption_client
+lockfile=/var/lock/subsys/eqmd
+prog=${program##*/}
+
+RETVAL=0
+
+start() {
+	echo -n $"Starting $prog: "
+	/root/set_network.sh
+	daemon $program 1
+	RETVAL=$?
+	echo
+	[ $RETVAL -eq 0 ] && touch $lockfile
+	sleep 4
+	return $RETVAL
+}
+
+stop() {
+	echo -n $"Stopping $prog: "
+	sync
+	killall -s SIGINT $program
+	RETVAL=$?
+	echo
+	[ $RETVAL -eq 0 ] && rm -rf $lockfile
+	return $RETVAL
+}
+
+case "$1" in
+start)
+	start
+	;;
+
+stop)
+	stop
+	;;
+
+restart)
+	stop
+	start
+	;;
+
+status)
+	;;
+
+*)
+	echo "start | stop | status "
+	exit 1	
+	;;
+esac
+exit $RETVAL

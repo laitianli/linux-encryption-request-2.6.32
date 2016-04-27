@@ -163,15 +163,11 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 			/* 让其在线程里处理，要把bio加入到列表中，在线程里遍历列表 */		
 			if(blk_fs_request(rq)) {
 				int err_code = 0;
-#if 0			
 				err_code = decryption_reuqest(q, bio);
-				if(err_code)
-					bio_endio(bio, -EIO);
-#else
-				err_code = decryption_reuqest_ex(q, bio);
 				if(err_code == 1) /* 加密的磁盘已经处理过，无须再调用bio_endio */
 					return ;
-#endif			
+				if(err_code == -EIO) /* 网络问题 */
+					error = -EIO;			
 			}
 			bio_endio(bio, error);
 		}
