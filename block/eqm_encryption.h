@@ -24,6 +24,15 @@
 #include <linux/syscalls.h>
 #define MISC_EQM_ENCRYPTION_NAME  "eqm-encryption"
 #define MISC_EQM_DECRYPTION_NAME  "eqm-decryption"
+#define EQM_ENCRYPTION_UNPLUG_TIMEOUT 100
+#define EQM_DECRYPTION_UNPLUG_TIMEOUT 50
+
+#undef NLog
+#undef ELog
+#define ELog(fmt,arg...) printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);
+#define NLog(n,fmt,arg...)	do{	static int i = 0;if(i++ < n){printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);}}while(0)
+
+
 
 struct eqm_data {
 	struct page* 		ppage;
@@ -32,24 +41,32 @@ struct eqm_data {
 	int 				err_code;
 }; 
 
+struct eqm_data_ex {
+	struct bio_vec* bi_io_vec;
+	struct list_head entry_list;
+};
+
 struct eqm_data_info{
+	unsigned char 		count;
 	unsigned int 		len;
 	unsigned int 		offset;
 };
 extern int is_encrytion_disk(const char *name);
 
-int encryption_request(struct request_queue *q, struct bio **bio);
 int decryption_reuqest(struct request_queue *q, struct bio *bio);
  
 typedef void (*eqm_wake_up_fn)(void*);
-
-int send_encryption_data_to_network(struct page* ppage, unsigned int len,  unsigned int offset);
-void clear_encryption_data(void);
 
 int send_decryption_data_to_network(struct page* ppage, unsigned int len, unsigned int offset);
 void clear_decryption_data(void);
 
 int get_network_status(void);
+
+typedef void generic_make_request_fn(struct bio *bio);
+int encrytion_disk(struct bio* bio);
+void encryption_make_request(struct bio *bio, generic_make_request_fn fn);
+int send_encryption_data_to_network_ex(struct bio* bio, generic_make_request_fn fn);
+
 
 /* ioctl命令 */
 /* 获取数据大小 */

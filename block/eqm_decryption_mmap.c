@@ -9,7 +9,6 @@ static LIST_HEAD(g_list_eqm_data);
 static spinlock_t g_de_data_spinlock;
 static struct eqm_data *gp_de_data = NULL;
 static atomic_t eqm_network_status;
-
 static DEFINE_MUTEX(g_de_data_mutex);
 
 static int eqm_decryption_open(struct inode* inode, struct file* file);
@@ -125,9 +124,10 @@ static void eqm_decryption_vm_close(struct vm_area_struct * area)
 
 static int eqm_decryption_mmap(struct file* pf, struct vm_area_struct* vma)
 {
+	
 	spin_lock(&g_de_data_spinlock);
-
 	vma->vm_ops = &eqm_vm_ops;
+
 	if (remap_pfn_range(vma, vma->vm_start, 
 			page_to_pfn(gp_de_data->ppage), vma->vm_end - vma->vm_start, 
 			vma->vm_page_prot)) {
@@ -147,9 +147,11 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 	{
 		struct eqm_data_info info;
 		spin_lock(&g_de_data_spinlock);
+
 		info.len = gp_de_data->len;
-		info.offset = gp_de_data->offset;	
-		//put_user(gp_de_data->len, argp);
+		info.offset = gp_de_data->offset;
+		info.count = 1;
+
 		spin_unlock(&g_de_data_spinlock);
 		if(copy_to_user(argp, &info, sizeof(struct eqm_data_info))) {
 			printk("[Error]=copy_to_user error.\n");
@@ -224,7 +226,6 @@ static int __init eqm_decryption_module_init(void)
 	
 	atomic_set(&be_eqm_decryption_read, 0);
 	atomic_set(&eqm_network_status, 0);
-
     ret = misc_register(&eqm_decryption_dev);
 	if(ret)
 		printk(KERN_ERR"[Error] load eqm decryption module failed.\n");

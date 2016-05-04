@@ -50,28 +50,28 @@ struct timeval tv_end;
 
 #define POLLTIMEOUT 1000
 
-void set_begin_speed(const char* dev, struct eqm_data_info* info)
+void set_begin_speed(const char* dev, int len)
 {
 	if(!strcmp(dev, EQM_ENCRYPTION_DEVICE)) {
 		if(g_encryption_info.data_len == 0) {
 			gettimeofday(&g_encryption_info.begin_time, NULL);
 			memset(&g_encryption_info.end_time, 0, sizeof(struct timeval));			
 		}
-		g_encryption_info.data_len += info->len;
+		g_encryption_info.data_len += len;
 	}
 	else if(!strcmp(dev, EQM_DECRYPTION_DEVICE)) {
 		if(g_decryption_info.data_len == 0) {
 			gettimeofday(&g_decryption_info.begin_time, NULL);
 			memset(&g_decryption_info.end_time, 0, sizeof(struct timeval));
 		}
-		g_decryption_info.data_len += info->len;
+		g_decryption_info.data_len += len;
 	}
 }
 
 void show_speed_rate(const char* dev, struct speed_info* info)
 {
 	unsigned long timeout = info->end_time.tv_sec - info->begin_time.tv_sec;
-	PLog("\"%s\" speed [%5.2f KB/s]\n", dev, ((float)(info->data_len /1024 * 100) / (float)timeout ) / 100);
+	PLog("\"%s\" speed [%5.2f KB/s]", dev, ((float)(info->data_len /1024 * 100) / (float)timeout ) / 100);
 
 }
 
@@ -132,12 +132,11 @@ static int do_kernel_mmap_data(const char* dev, encryption_fn fn)
 				encryption_thread_is_ok = 1;
 			if(!strcmp(dev, EQM_DECRYPTION_DEVICE))
 				decryption_thread_is_ok = 1;
-			//PLog("read [%s] dev file thread poll timeout.\n", dev);
 			set_end_speed(dev);
 			continue;
 		}
 		else if(ret > 0) {	
-			struct eqm_data_info info;
+			struct eqm_data_info info = {0};
 			 /* 获取数据相关信息，数据长度和当前数据在page中的偏移量 */
 			ret = ioctl(fd, MISC_EQM_GET_DATA_LENGTH, &info);
 			if (fd < 0) {
@@ -145,20 +144,24 @@ static int do_kernel_mmap_data(const char* dev, encryption_fn fn)
 				return -1;
 			}
 			
-			set_begin_speed(dev, &info);
+			mmap_size = page_size * info.count;
+			if(info.count > 1)
+				info.len = mmap_size;
+			
+			set_begin_speed(dev, info.len);
 			/* 内存映射 */
-			addr =(unsigned char*)mmap(0, page_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+			addr =(unsigned char*)mmap(0, mmap_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
 			/* 调用加解密接口 */
 			ret = fn(addr + info.offset, info.len);
 			if(ret != info.len) {	/* 通知操作做错误处理 */
 				int error_code = -1;
-				PLog("[Error] ret != page_size [%s].\n", dev);
+				printf("[Error] ret != page_size [%s].\n", dev);
 				ret = ioctl(fd, MISC_EQM_ENCRYPTION_FAILED, &error_code);
 			}
 			/* 同步文件 */
 			fsync(fd);
 			/* 反映射 */
-			munmap(addr, page_size);
+			munmap(addr, mmap_size);
 			continue;
 		}
 	}while(1);

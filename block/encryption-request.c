@@ -19,13 +19,6 @@ static struct task_struct* decryption_thread_handle = NULL;
 static spinlock_t g_thread_spinlock;
 static LIST_HEAD(read_bio_list);
 
-#undef NLog
-#undef ELog
-#define ELog(fmt,arg...) printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);
-#define NLog(n,fmt,arg...)	do{	static int i = 0;if(i++ < n){printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);}}while(0)
-
-
-static int encryption_in_network(struct request_queue* q, struct bio* bio);
 static int decryption_in_network(struct request_queue* q, struct bio* bio);
 static int be_encryption_disk(const char* partition_name);
 static void add_bio_to_list(struct bio* bio);
@@ -114,61 +107,6 @@ static struct bio* copy_bio(struct request_queue *q, struct bio* org_bio,
 	
 }
 /**ltl
- * 功能:写请求加密接口
- * 参数: q	-> 请求队列对象
- *		bio	->[in] bio写请求对象 ; [out] 重新生成的已经被加密过的请求。
- * 返回值: 无
- * 说明: 1. copy bio对象中。
- */
-int encryption_request(struct request_queue *q, struct bio **bio)
-{	
-	int err_code = 0;
-	struct bio *new_bio = NULL; /* 在这里要重新创建一个bio交给底层处理 */	
-	char b[BDEVNAME_SIZE]={0}; 
-	
- 	if ((*bio)->bi_private1) /* 此已经加密过 */
- 		return err_code;
-
-	/* 是否是需要加密的磁盘 */
-	if(!(*bio)->bi_bdev || 
-		!(bdevname((*bio)->bi_bdev, b) && strlen(b))|| 
-		!be_encryption_disk(b))
-		return err_code;
-	
-	/* 网络不通 */
-	if(!get_network_status()) {
-//		Log("[Error] network failed.");
-		return -EIO;
-	}
-	
-	/* 保存加密盘的分区名 */
-	(*bio)->bi_private1 = kzalloc(BDEVNAME_SIZE, GFP_KERNEL);
-	if(!(*bio)->bi_private1)
-		return -EIO;
-	strncpy((char*)((*bio)->bi_private1), b, BDEVNAME_SIZE-1);
-	
-	if(bio_data_dir(*bio) != WRITE)
-	{/* 加密盘的读操作 */ 
-		return 0; /* 不能当作是错误的操作，对读流程 */
-	}
-	NLog(30,"begin encryption disk: %s", b);
-	/*写操作 */
-	/* 拷贝bio对象 */
-	new_bio = copy_bio(q, *bio, encryption_end_io_write);
-	if(new_bio == *bio)
-		return err_code;
-	
-
-	err_code = encryption_in_network(q, new_bio);
-	if(err_code) {
-		encryption_end_io_write(new_bio, -EIO);
-	}
-	/* 将加密过的bio请求返回 */
-	*bio = new_bio; 
-	return err_code;
-}
-
-/**ltl
  * 功能: 读请求加密接口
  * 参数: q	->请求队列对象
  *		bio	->bio读请求对象
@@ -182,45 +120,23 @@ int decryption_reuqest(struct request_queue *q, struct bio *bio)
 		!bio->bi_private1 || 
 		!be_encryption_disk(bio->bi_private1)) /* 是否是需要加密的磁盘 */
 		return 0; 
+	
+	
+	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));
+	kfree(bio->bi_private1);
+	bio->bi_private1 = NULL;
+	
 	if(!get_network_status()){
 		//Log("[Error] network failed.");
 		return -EIO;
 	}
-	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));
-	kfree(bio->bi_private1);
-	bio->bi_private1 = NULL;
-
 	/* 将bio加入到bio列表中，唤醒线程处理 */
 	add_bio_to_list(bio);
 	//NLog(300,"after call add_bio_to_list fun");
 	return 1;//decryption_in_network(q, bio);
 }
-EXPORT_SYMBOL(encryption_request);
-EXPORT_SYMBOL(decryption_reuqest);
 
-/**ltl
- * 功能:加密算法接口，将需要加密的数据上抛到用户空间
- * 参数:
- * 返回值:
- * 说明: 对所有数据+1
- */
-static int encryption_in_network(struct request_queue* q, struct bio* bio)
-{
-	struct bio_vec *from;
-	struct page *page;
-	struct bio *new_bio = bio; /* 在这里要重新创建一个bio交给底层处理 */
-	int i = 0, err_code = 0;
-	bio_for_each_segment(from, new_bio, i) { 
-		page = from->bv_page;
-		/* 将需要加密的数据加入到列表中, 唤醒用户进程去读取数据，并加密处理 */
-		err_code = send_encryption_data_to_network(page, from->bv_len, from->bv_offset);
-		if(err_code) {
-			printk(KERN_ERR"[Error] encryption the data fail. it's possible the network error.\n");
-			return err_code;
-		}
-	} 
-	return 0;
-}
+EXPORT_SYMBOL(decryption_reuqest);
 
 /**ltl
  * 功能:解密接口，将需要解密的数据上抛到用户空间
@@ -228,6 +144,7 @@ static int encryption_in_network(struct request_queue* q, struct bio* bio)
  * 返回值:
  * 说明: 对所有数据-1
  */
+
 static int decryption_in_network(struct request_queue* q, struct bio* bio)
 {
 	struct bio_vec *from;
@@ -247,14 +164,13 @@ static int decryption_in_network(struct request_queue* q, struct bio* bio)
 	return 0;
 }
 
-#define PER_CPU_LIST 0
+
 /**ltl
  * 功能: 将需要解密的bio交给解密线程decryption_request_handler
  * 参数: bio	->bio对象
  * 返回值:
  * 说明:
  */
-#if  PER_CPU_LIST <= 0
 
 static void add_bio_to_list(struct bio* bio)
 {
@@ -300,6 +216,7 @@ static int decryption_request_handler(void *data)
 				err_code = 0;
 				/* 将要解密的数据映射到用户空间 */
 				err_code = decryption_in_network(q, bio);
+				
 				/* 将bio提交 */
 				if (err_code)
 					clear_bit(BIO_UPTODATE, &bio->bi_flags);
@@ -312,7 +229,62 @@ static int decryption_request_handler(void *data)
 			set_current_state(TASK_INTERRUPTIBLE);
 		}
 	__set_current_state(TASK_RUNNING);
+
 	return 0;
+}
+
+int encrytion_disk(struct bio* bio)
+{
+	char b[BDEVNAME_SIZE]={0}; 
+	
+	/* 是否是需要加密的磁盘 */
+	if(!(bio)->bi_bdev || 
+		!(bdevname((bio)->bi_bdev, b) && strlen(b))|| 
+		!be_encryption_disk(b))
+		return 0;
+
+	return 1;
+}
+
+
+void encryption_make_request(struct bio *bio, generic_make_request_fn fn)
+{	
+	char b[BDEVNAME_SIZE] = {0};
+	struct bio* new_bio = NULL;
+	struct request_queue* q = NULL;
+	
+	if (bio->bi_private1) { /* 此已经加密过 */
+		goto MAKE_REQUEST;
+	}	
+	
+	/* 保存加密盘的分区名 */
+	bio->bi_private1 = kzalloc(BDEVNAME_SIZE, GFP_KERNEL);
+	BUG_ON(!bio->bi_private1);	
+	bdevname(bio->bi_bdev, b);
+	strncpy((char*)(bio->bi_private1), b, BDEVNAME_SIZE-1);
+	
+	if(bio_data_dir(bio) != WRITE) {/* 加密盘的读操作 */ 
+		goto MAKE_REQUEST;
+	}
+		/* 网络不通 */
+	if(!get_network_status()) {
+		bio->bi_rw |= 1 << BIO_RW_DISCARD; /* 丢弃此请求 */
+		ELog("[Error] network failed.");
+		goto MAKE_REQUEST;
+	}
+	NLog(30,"begin encryption disk: %s", b);
+	/*写操作 */
+	/* 拷贝bio对象 */
+	q = bdev_get_queue(bio->bi_bdev);
+	new_bio = copy_bio(q, bio, encryption_end_io_write);
+	if(new_bio == bio)
+		goto MAKE_REQUEST;
+	
+	send_encryption_data_to_network_ex(new_bio, fn);
+	
+	return ;
+MAKE_REQUEST:
+	fn(bio);
 }
 
 /**ltl
@@ -332,93 +304,7 @@ static int __init decryption_request_module_init(void)
 	return 0;
 }
 
-#else
-
-static DEFINE_PER_CPU(struct list_head, read_bio_per_cup_list);
-static void add_bio_to_list(struct bio* bio)
-{
-	struct list_head *list;
-	unsigned long flags;
-	INIT_LIST_HEAD(&bio->list);
-	local_irq_save(flags);
-	list = &__get_cpu_var(read_bio_per_cup_list);
-	list_add_tail(&bio->list, list);
-	wake_up_process(decryption_thread_handle);	
-
-	local_irq_restore(flags);
- }
-
-/**ltl
- * 功能: 解密线程
- * 参数: bio	->bio对象
- * 返回值:
- * 说明: 由于解密是在软中断上下文中，中断上下文不允许被调度，因此创建此线程处理。
- */
-static int decryption_request_handler(void *data)
-{
-	int err_code = 0;
-	struct list_head *cpu_list, local_list;
-	
-	struct request_queue* q = NULL;	
-	set_current_state(TASK_INTERRUPTIBLE);
-	while (!kthread_should_stop()) {
-			local_irq_disable();
-			cpu_list = &__get_cpu_var(read_bio_per_cup_list);
-			list_replace_init(cpu_list, &local_list);
-			local_irq_enable();
-			if(list_empty(local_list)) {
-				schedule();
-				set_current_state(TASK_INTERRUPTIBLE);
-				continue;
-			}
-
-			__set_current_state(TASK_RUNNING);		
-	
-			//spin_lock(&g_thread_spinlock);
-			//list_replace_init(&read_bio_list, &local_list);
-			//spin_unlock(&g_thread_spinlock); 			
-			while (!list_empty(&local_list)) {	
-				/*do bio*/
-				struct bio *bio;
-				bio = list_entry(local_list.next, struct bio, list);
-				list_del_init(&bio->list);
-				q = bio->bi_bdev->bd_disk->queue;
-				err_code = 0;
-				/* 将要解密的数据映射到用户空间 */
-				err_code = decryption_in_network(q, bio);
-				/* 将bio提交 */
-				if (err_code)
-					clear_bit(BIO_UPTODATE, &bio->bi_flags);
-				else if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
-					err_code = -EIO;
-		
-				if(bio->bi_end_io)
-					bio->bi_end_io(bio, err_code);
-			}
-			set_current_state(TASK_INTERRUPTIBLE);
-		}
-	__set_current_state(TASK_RUNNING);
-	return 0;
-}
-
-/**ltl
- * 功能: 创建解密线程
- */
-static int __init decryption_request_module_init(void)
-{	
-	spin_lock_init(&g_thread_spinlock);
-	decryption_thread_handle = kthread_run(decryption_request_handler, NULL, 
-		"decryption_handle_thread");
-	if (IS_ERR(decryption_thread_handle)) {
-		printk(KERN_ERR"[Error] Create thread \"decryption_handle_thread\" failed.\n");
-		return -1;
-	}
-	printk(KERN_INFO"Create thread \"decryption_handle_thread\" Success.\n");
-
-	return 0;
-}
-
-
-#endif
 subsys_initcall(decryption_request_module_init);
+
+
 

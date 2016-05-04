@@ -54,6 +54,7 @@ typedef int (*encryption_fn)(unsigned char *buf, int len);
 typedef int (*network_status)(int status);
 
 struct eqm_data_info{
+	unsigned char 		count;
 	unsigned int 		len;
 	unsigned int 		offset;
 };

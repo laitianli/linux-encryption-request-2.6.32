@@ -152,8 +152,8 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 			set_bit(BIO_QUIET, &bio->bi_flags);
 
 		bio->bi_size -= nbytes;
-		bio->bi_sector += (nbytes >> 9);
-
+		bio->bi_sector += (nbytes >> 9);	
+		
 		if (bio_integrity(bio))
 			bio_integrity_advance(bio, nbytes);
 
@@ -1185,7 +1185,7 @@ static int __make_request(struct request_queue *q, struct bio *bio)
 	 * ISA dma in theory)
 	 */
 	blk_queue_bounce(q, &bio);
-
+	
 	spin_lock_irq(q->queue_lock);
 
 	if (unlikely(bio_rw_flagged(bio, BIO_RW_BARRIER)) || elv_queue_empty(q))
@@ -1423,7 +1423,6 @@ static inline void __generic_make_request(struct bio *bio)
 	int err = -EIO;
 
 	might_sleep();
-
 	if (bio_check_eod(bio, nr_sectors))
 		goto end_io;
 
@@ -1464,11 +1463,8 @@ static inline void __generic_make_request(struct bio *bio)
 
 		if (should_fail_request(bio))
 			goto end_io;
-
-		if(encryption_request(q, &bio))
-			goto end_io;
-
-		/*
+		
+ 		/*
 		 * If this device has partitions, remap block n
 		 * of partition p to block n+start(p) of the disk.
 		 */
@@ -1492,8 +1488,8 @@ static inline void __generic_make_request(struct bio *bio)
 			goto end_io;
 		}
 
-		trace_block_bio_queue(q, bio);
-
+		trace_block_bio_queue(q, bio); 
+		
 		ret = q->make_request_fn(q, bio);
 	} while (ret);
 
@@ -1548,7 +1544,10 @@ void generic_make_request(struct bio *bio)
 			current->bio_tail = &current->bio_list;
 		else
 			bio->bi_next = NULL;
-		__generic_make_request(bio);
+		if(encrytion_disk(bio)) 
+			encryption_make_request(bio, __generic_make_request);
+		else		
+			__generic_make_request(bio);
 		bio = current->bio_list;
 	} while (bio);
 	current->bio_tail = NULL; /* deactivate */
@@ -1568,7 +1567,6 @@ EXPORT_SYMBOL(generic_make_request);
 void submit_bio(int rw, struct bio *bio)
 {
 	int count = bio_sectors(bio);
-
 	bio->bi_rw |= rw;
 
 	/*
