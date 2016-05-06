@@ -22,26 +22,22 @@
 #include <linux/spinlock.h>
 #include <linux/preempt.h>
 #include <linux/syscalls.h>
+#include <linux/highmem.h>
+#include <linux/kthread.h>
 #define MISC_EQM_ENCRYPTION_NAME  "eqm-encryption"
 #define MISC_EQM_DECRYPTION_NAME  "eqm-decryption"
-#define EQM_ENCRYPTION_UNPLUG_TIMEOUT 100
-#define EQM_DECRYPTION_UNPLUG_TIMEOUT 50
+#define EQM_ENCRYPTION_UNPLUG_TIMEOUT 100	/* 加密操作"泄流"超时时间(ms) */
+#define EQM_ENCRYPTION_DATA_SIZE 	  32	/* 加密操作队列中bio请求个数 */
+#define EQM_DECRYPTION_UNPLUG_TIMEOUT 20    /* 解密操作"泄流"超时时间(ms) */
+#define EQM_DECRYPTION_DATA_SIZE 	  32	/* 解密操作队列中bio请求个数 */
 
 #undef NLog
 #undef ELog
 #define ELog(fmt,arg...) printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);
 #define NLog(n,fmt,arg...)	do{	static int i = 0;if(i++ < n){printk(KERN_WARNING"[Encryption]=[%s:%d]="fmt"\n",__func__,__LINE__,##arg);}}while(0)
-
-
+ 
 
 struct eqm_data {
-	struct page* 		ppage;
-	unsigned int 		len;
-	unsigned int 		offset;
-	int 				err_code;
-}; 
-
-struct eqm_data_ex {
 	struct bio_vec* bi_io_vec;
 	struct list_head entry_list;
 };
@@ -56,16 +52,13 @@ extern int is_encrytion_disk(const char *name);
 int decryption_reuqest(struct request_queue *q, struct bio *bio);
  
 typedef void (*eqm_wake_up_fn)(void*);
-
-int send_decryption_data_to_network(struct page* ppage, unsigned int len, unsigned int offset);
-void clear_decryption_data(void);
-
+int send_decryption_data_to_network(struct bio* bio); 
 int get_network_status(void);
 
 typedef void generic_make_request_fn(struct bio *bio);
 int encrytion_disk(struct bio* bio);
 void encryption_make_request(struct bio *bio, generic_make_request_fn fn);
-int send_encryption_data_to_network_ex(struct bio* bio, generic_make_request_fn fn);
+int send_encryption_data_to_network(struct bio* bio, generic_make_request_fn fn);
 
 
 /* ioctl命令 */

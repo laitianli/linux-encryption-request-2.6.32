@@ -1,27 +1,9 @@
 /******
  * 实现bio请求的加解密功能
  */
-
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/bio.h>
-#include <linux/blkdev.h>
-#include <linux/highmem.h>
-#include <linux/mm.h>
-#include <linux/slab.h>
-#include <linux/sched.h>
-#include <linux/kthread.h>
-#include <linux/spinlock.h>
 #include "eqm_encryption.h"
 
-/* 解密线程 */
-static struct task_struct* decryption_thread_handle = NULL;
-static spinlock_t g_thread_spinlock;
-static LIST_HEAD(read_bio_list);
-
-static int decryption_in_network(struct request_queue* q, struct bio* bio);
 static int be_encryption_disk(const char* partition_name);
-static void add_bio_to_list(struct bio* bio);
 
 static int be_encryption_disk(const char* partition_name)
 {
@@ -121,8 +103,7 @@ int decryption_reuqest(struct request_queue *q, struct bio *bio)
 		!be_encryption_disk(bio->bi_private1)) /* 是否是需要加密的磁盘 */
 		return 0; 
 	
-	
-	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));
+	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));	
 	kfree(bio->bi_private1);
 	bio->bi_private1 = NULL;
 	
@@ -131,107 +112,11 @@ int decryption_reuqest(struct request_queue *q, struct bio *bio)
 		return -EIO;
 	}
 	/* 将bio加入到bio列表中，唤醒线程处理 */
-	add_bio_to_list(bio);
-	//NLog(300,"after call add_bio_to_list fun");
-	return 1;//decryption_in_network(q, bio);
+	send_decryption_data_to_network(bio);
+	return 1;
 }
 
 EXPORT_SYMBOL(decryption_reuqest);
-
-/**ltl
- * 功能:解密接口，将需要解密的数据上抛到用户空间
- * 参数:
- * 返回值:
- * 说明: 对所有数据-1
- */
-
-static int decryption_in_network(struct request_queue* q, struct bio* bio)
-{
-	struct bio_vec *from;
-	struct page *page;
-	int i = 0, err_code = 0;
-
-	bio_for_each_segment(from, bio, i) {
-		page = from->bv_page;		
-		flush_dcache_page(page);
-		/* 将需要加密的数据加入到列表中,唤醒用户进程去读取数据，并解密处理  */
-		err_code = send_decryption_data_to_network(page, from->bv_len, from->bv_offset);	
-		if(err_code) {
-			printk(KERN_ERR"[Error] decryption the data fail. it's possible the network error.\n");
-			return err_code;
-		}
-	}
-	return 0;
-}
-
-
-/**ltl
- * 功能: 将需要解密的bio交给解密线程decryption_request_handler
- * 参数: bio	->bio对象
- * 返回值:
- * 说明:
- */
-
-static void add_bio_to_list(struct bio* bio)
-{
-	INIT_LIST_HEAD(&bio->list);
-	spin_lock(&g_thread_spinlock);
-	list_add_tail(&bio->list, &read_bio_list);
-	wake_up_process(decryption_thread_handle);	
-	spin_unlock(&g_thread_spinlock);
-
-}
-
-/**ltl
- * 功能: 解密线程
- * 参数: bio	->bio对象
- * 返回值:
- * 说明: 由于解密是在软中断上下文中，中断上下文不允许被调度，因此创建此线程处理。
- */
-static int decryption_request_handler(void *data)
-{
-	int err_code = 0;
-	struct list_head local_list;
-	
-	struct request_queue* q = NULL;	
-	set_current_state(TASK_INTERRUPTIBLE);
-	while (!kthread_should_stop()) {			
-			if(list_empty(&read_bio_list)) {
-				schedule();
-				set_current_state(TASK_INTERRUPTIBLE);
-				continue;
-			}
-
-			__set_current_state(TASK_RUNNING);		
-	
-			spin_lock(&g_thread_spinlock);
-			list_replace_init(&read_bio_list, &local_list);
-			spin_unlock(&g_thread_spinlock); 			
-			while (!list_empty(&local_list)) {	
-				/*do bio*/
-				struct bio *bio;
-				bio = list_entry(local_list.next, struct bio, list);
-				list_del_init(&bio->list);
-				q = bio->bi_bdev->bd_disk->queue;
-				err_code = 0;
-				/* 将要解密的数据映射到用户空间 */
-				err_code = decryption_in_network(q, bio);
-				
-				/* 将bio提交 */
-				if (err_code)
-					clear_bit(BIO_UPTODATE, &bio->bi_flags);
-				else if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
-					err_code = -EIO;
-		
-				if(bio->bi_end_io)
-					bio->bi_end_io(bio, err_code);
-			}
-			set_current_state(TASK_INTERRUPTIBLE);
-		}
-	__set_current_state(TASK_RUNNING);
-
-	return 0;
-}
 
 int encrytion_disk(struct bio* bio)
 {
@@ -280,31 +165,14 @@ void encryption_make_request(struct bio *bio, generic_make_request_fn fn)
 	if(new_bio == bio)
 		goto MAKE_REQUEST;
 	
-	send_encryption_data_to_network_ex(new_bio, fn);
+	send_encryption_data_to_network(new_bio, fn);
 	
 	return ;
 MAKE_REQUEST:
 	fn(bio);
 }
 
-/**ltl
- * 功能: 创建解密线程
- */
-static int __init decryption_request_module_init(void)
-{	
-	spin_lock_init(&g_thread_spinlock);
-	decryption_thread_handle = kthread_run(decryption_request_handler, NULL, 
-		"decryption_thread");
-	if (IS_ERR(decryption_thread_handle)) {
-		printk(KERN_ERR"[Error] Create thread \"decryption_thread\" failed.\n");
-		return -1;
-	}
-	printk(KERN_INFO"Create thread \"decryption_thread\" Success.\n");
 
-	return 0;
-}
-
-subsys_initcall(decryption_request_module_init);
 
 
 
