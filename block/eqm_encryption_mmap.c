@@ -7,12 +7,12 @@ static int g_err_code = 0;
 static wait_queue_head_t eqm_encryption_qh; 
 static wait_queue_head_t eqm_complete_qh;
 static atomic_t be_eqm_encryption_read;
-static spinlock_t g_data_spinlock;
 static DEFINE_MUTEX(g_data_mutex);
 struct timer_list	eqm_unplug_timer; 
 struct work_struct	eqm_unplug_work;
 static struct workqueue_struct *eqm_workqueue;
 static atomic_t eqm_encryption_index;
+static unsigned char eqm_en_pluged;
 static LIST_HEAD(g_eqm_encryption_bio_vec_slot);
 static LIST_HEAD(g_eqm_encryption_bio_slot);
 static unsigned char eqm_only_one_page = 0;
@@ -60,14 +60,13 @@ static void eqm_wake_up_function(void* data)
  
 static int eqm_encryption_open(struct inode* inode, struct file* file)
 {
-	printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
- 
+	//printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
 	return 0;
 }
 
 static int eqm_encryption_release(struct inode* inode, struct file* file)
 {
-	printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
+	//printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
 	return 0;
 }
 
@@ -111,11 +110,9 @@ static int eqm_encryption_mmap(struct file* pf, struct vm_area_struct* vma)
 	struct eqm_data *eqm = NULL;
 	
 	vma->vm_ops = &eqm_vm_ops;
- 	spin_lock(&g_data_spinlock);
 	if(eqm_only_one_page) { /* 映射单页 */
 		if (remap_pfn_range(vma, vma->vm_start, 
 			page_to_pfn(eqm_bio_vec->bv_page), PAGE_SIZE, vma->vm_page_prot)) {
-			spin_unlock(&g_data_spinlock);
 			return -EAGAIN;
 		}
 	}
@@ -126,7 +123,6 @@ static int eqm_encryption_mmap(struct file* pf, struct vm_area_struct* vma)
 			list_del(list_node);
 			if (remap_pfn_range(vma, vma->vm_start + i * PAGE_SIZE, 
 				page_to_pfn(eqm->bi_io_vec->bv_page), PAGE_SIZE, vma->vm_page_prot)) {
-				spin_unlock(&g_data_spinlock);
 				return -EAGAIN;
 			}
 			i++;		
@@ -134,7 +130,6 @@ static int eqm_encryption_mmap(struct file* pf, struct vm_area_struct* vma)
 		}
 	}
 
- 	spin_unlock(&g_data_spinlock);	
 	return 0;
 }
 
@@ -146,7 +141,6 @@ static int eqm_encryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 	case MISC_EQM_GET_DATA_LENGTH:
 	{
 		struct eqm_data_info info = {0};
-		spin_lock(&g_data_spinlock);
 
 		if(eqm_only_one_page){ /* 映射单页面时，将数据长度和偏移显示返回 */
 			info.count = 1;
@@ -162,7 +156,6 @@ static int eqm_encryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 				info.len = 0;
 		}
 
-		spin_unlock(&g_data_spinlock);
 		if(copy_to_user(argp, &info, sizeof(struct eqm_data_info))) {
 			printk("[Error]=copy_to_user error.\n");
 			return -EINVAL;
@@ -191,12 +184,18 @@ static int eqm_encryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 /* 开启定时器 */
 void start_eqm_unplug_timer(void)
 {
-	mod_timer(&eqm_unplug_timer, jiffies + EQM_ENCRYPTION_UNPLUG_TIMEOUT);
+	if(!eqm_en_pluged) {
+		mod_timer(&eqm_unplug_timer, jiffies + EQM_ENCRYPTION_UNPLUG_TIMEOUT);
+		eqm_en_pluged = 1;
+	}
 }
 /* 停止定时器 */
 void end_eqm_unplug_timer(void)
 {
-	del_timer(&eqm_unplug_timer);
+	if(eqm_en_pluged) {
+		del_timer(&eqm_unplug_timer);
+		eqm_en_pluged=0;
+	}
 }
 /* "泄流"定时器处理函数 */
 static void eqm_blk_unplug_timeout(unsigned long data)
@@ -245,10 +244,8 @@ int send_encryption_data_network(generic_make_request_fn fn)
 		bio_for_each_segment(from, /*bio_array[i]*/bio, j) { 
 			/* 说明需要加密的数据小于PAGE_SIZE, 则将此请求单独的映射(不单独映射的话，映射到的用户空间的数据会出错) */
 			if( from->bv_offset > 0 ||  from->bv_len < PAGE_SIZE) {
-				spin_lock(&g_data_spinlock);
 				eqm_only_one_page = 1;	
 				eqm_bio_vec = from;				
-				spin_unlock(&g_data_spinlock);
 				/* 1.唤醒用户进程encryptio_client；2.等待进程encryption_client将数据加密完成 */
 				err_code = wait_for_encryption_complete();
 				
@@ -263,13 +260,11 @@ int send_encryption_data_network(generic_make_request_fn fn)
 				eqm = kzalloc(sizeof(struct eqm_data), GFP_KERNEL);				
 				BUG_ON(!eqm);
 				
-				spin_lock(&g_data_spinlock);
 				eqm->bi_io_vec = from;
 				
 				INIT_LIST_HEAD(&eqm->entry_list);
 				list_add_tail(&eqm->entry_list, &g_eqm_encryption_bio_vec_slot);
 				eqm_page_count ++;
-				spin_unlock(&g_data_spinlock);
 			}
 		}
 	}
@@ -337,12 +332,12 @@ static int __init eqm_encryption_module_init(void)
 	eqm_unplug_timer.data 	  = 0;
 	INIT_WORK(&eqm_unplug_work, eqm_blk_unplug_work);	
 
-	spin_lock_init(&g_data_spinlock);
 	init_waitqueue_head(&eqm_encryption_qh);
 	init_waitqueue_head(&eqm_complete_qh);
 	
 	atomic_set(&be_eqm_encryption_read, 0);
 	atomic_set(&eqm_encryption_index, 0);
+	eqm_en_pluged = 0;
 
     ret = misc_register(&eqm_encryption_dev);
 	if(!ret)

@@ -16,6 +16,7 @@
 #include <limits.h>
 #include <sys/mount.h>
 #include <signal.h>
+#include <errno.h>
 extern FILE* logfd;
 
 #define PLog(fmt,arg...) do { \

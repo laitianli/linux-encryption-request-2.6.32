@@ -103,7 +103,6 @@ int decryption_reuqest(struct request_queue *q, struct bio *bio)
 		!be_encryption_disk(bio->bi_private1)) /* 是否是需要加密的磁盘 */
 		return 0; 
 	
-	NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));	
 	kfree(bio->bi_private1);
 	bio->bi_private1 = NULL;
 	
@@ -111,6 +110,7 @@ int decryption_reuqest(struct request_queue *q, struct bio *bio)
 		//Log("[Error] network failed.");
 		return -EIO;
 	}
+	//NLog(30,"decryption disk: %s", (const char*)(bio->bi_private1));	
 	/* 将bio加入到bio列表中，唤醒线程处理 */
 	send_decryption_data_to_network(bio);
 	return 1;

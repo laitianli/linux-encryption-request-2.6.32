@@ -88,18 +88,25 @@ int mount_encryption_disk(void)
 
 int umount_encryption_disk(void)
 {
-	int ret = 0;
-	int i = 0;
+	int ret = 0, i = 0, j = 0;
 	while(strlen(g_mount[i].dev))
 	{
 		ret= umount(g_mount[i].mount_point);
-		if(ret < 0){
-			PLog("[Error] umount [%s] at [%s] failed. filesystem type [%s]\n",
+		if(ret < 0){			
+			if(errno == EBUSY && j++ < 3)
+			{				
+				PLog("[Info] umount [%s] at [%s] failed. filesystem type [%s], retry it again.",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
+				sleep(3);
+				continue;
+			}
+			PLog("[Error] umount [%s] at [%s] failed (errno=%d). filesystem type [%s]",
+				g_mount[i].dev, g_mount[i].mount_point, errno, g_mount[i].fs_type);
 		}
 		else
-			PLog("umount [%s] at [%s] success. filesystem type [%s]\n",
+			PLog("umount [%s] at [%s] success. filesystem type [%s]",
 				g_mount[i].dev, g_mount[i].mount_point, g_mount[i].fs_type);
+		j = 0;
 		i++;
 	}
 	return 0;

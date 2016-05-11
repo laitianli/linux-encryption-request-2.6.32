@@ -5,7 +5,7 @@
  * 0: 使用网络功能进行加解密
  * 1: 使用本地加解密算法。
  */
-#define LOCAL_ENCRYPTION_ALGORITHM 1 
+#define LOCAL_ENCRYPTION_ALGORITHM 0 
 
 pthread_t encryption_pid;
 pthread_t decryption_pid;
@@ -106,7 +106,7 @@ static int do_kernel_mmap_data(const char* dev, encryption_fn fn)
 	}
 	/* 打开设备文件 */
 	int fd = open(dev, O_RDWR);
-	if (fd <= 0) {
+	if (fd < 0) {
 		PLog("[error] open file [%s] failed.\n", dev);
 		return -1;
 	}
@@ -143,7 +143,8 @@ static int do_kernel_mmap_data(const char* dev, encryption_fn fn)
 				printf("[error] get data info failed. cmd=MISC_EQM_GET_DATA_LENGTH\n", dev);
 				return -1;
 			}
-			
+			//if(!strcmp(dev, EQM_DECRYPTION_DEVICE))
+			//	printf("\"%s\" info.count=%d\n",dev, info.count);
 			mmap_size = page_size * info.count;
 			if(info.count > 1)
 				info.len = mmap_size;
@@ -204,9 +205,9 @@ int test_fun(char** argv)
 int set_network_status(int status)
 {
 	int ret = 0;
-	int fd = open(EQM_DECRYPTION_DEVICE, O_RDONLY);
-	if (fd <= 0) {
-		PLog("[error] open file [%s] failed.\n", EQM_DECRYPTION_DEVICE);
+	int fd = open(EQM_DECRYPTION_DEVICE, O_RDWR);
+	if (fd < 0) {
+		PLog("[error] open file [%s] failed. errno=%d\n", EQM_DECRYPTION_DEVICE, errno);
 		return -1;
 	}
 	ret = ioctl(fd, MISC_EQM_NET_STATUS, &status);

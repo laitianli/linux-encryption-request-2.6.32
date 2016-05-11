@@ -26,10 +26,10 @@
 #include <linux/kthread.h>
 #define MISC_EQM_ENCRYPTION_NAME  "eqm-encryption"
 #define MISC_EQM_DECRYPTION_NAME  "eqm-decryption"
-#define EQM_ENCRYPTION_UNPLUG_TIMEOUT 100	/* 加密操作"泄流"超时时间(ms) */
-#define EQM_ENCRYPTION_DATA_SIZE 	  32	/* 加密操作队列中bio请求个数 */
-#define EQM_DECRYPTION_UNPLUG_TIMEOUT 20    /* 解密操作"泄流"超时时间(ms) */
-#define EQM_DECRYPTION_DATA_SIZE 	  32	/* 解密操作队列中bio请求个数 */
+#define EQM_ENCRYPTION_UNPLUG_TIMEOUT 3	/* 加密操作"泄流"超时时间(ms)*/
+#define EQM_ENCRYPTION_DATA_SIZE 	  16	/* 加密操作队列中bio请求个数 */
+#define EQM_DECRYPTION_UNPLUG_TIMEOUT 3    /* 解密操作"泄流"超时时间(ms)*/
+#define EQM_DECRYPTION_DATA_SIZE 	  16	/* 解密操作队列中bio请求个数 */
 
 #undef NLog
 #undef ELog

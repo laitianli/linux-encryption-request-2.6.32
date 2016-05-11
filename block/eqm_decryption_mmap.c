@@ -5,17 +5,18 @@
 static wait_queue_head_t eqm_decryption_qh; 
 static wait_queue_head_t eqm_decryption_complete_qh;
 static atomic_t be_eqm_decryption_read;
+static unsigned char eqm_de_pluged;
 static LIST_HEAD(g_list_eqm_data);
-static spinlock_t g_de_data_spinlock;
 static atomic_t eqm_network_status;
 static DEFINE_MUTEX(g_de_data_mutex);
 /*********************************************/
 static int g_de_err_code = 0;
 struct timer_list	eqm_de_unplug_timer; 
+
 /* 解密线程 */
 static struct task_struct* decryption_thread_handle = NULL;
 static spinlock_t g_thread_spinlock;
-static atomic_t eqm_decryption_index;
+static unsigned char eqm_decryption_index = 0;
 static LIST_HEAD(g_eqm_decryption_bio_vec_slot);
 static LIST_HEAD(g_eqm_decryption_bio_slot);
 static unsigned char eqm_de_only_one_page = 0;
@@ -65,15 +66,13 @@ EXPORT_SYMBOL(get_network_status);
 
 static int eqm_decryption_open(struct inode* inode, struct file* file)
 {
-	printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
- 		
+	//printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__); 		
 	return 0;
 }
 
 static int eqm_decryption_release(struct inode* inode, struct file* file)
 {
-	printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);
-	
+	//printk(KERN_INFO"[%s:%s:%d]\n",__FILE__,__func__,__LINE__);	
 	return 0;
 }
 static unsigned int eqm_decryption_poll(struct file* pf, struct poll_table_struct* table)
@@ -98,15 +97,12 @@ static int eqm_decryption_mmap(struct file* pf, struct vm_area_struct* vma)
 	int i = 0;
 	struct list_head *list_node, *tmp;
 	struct eqm_data *eqm = NULL;
-	
-	spin_lock(&g_de_data_spinlock);
-	
+		
 	vma->vm_ops = &eqm_vm_ops;
 
 	if(eqm_de_only_one_page) {
 		if (remap_pfn_range(vma, vma->vm_start, 
 			page_to_pfn(eqm_de_bio_vec->bv_page), PAGE_SIZE, vma->vm_page_prot)) {
-			spin_unlock(&g_de_data_spinlock);
 			return -EAGAIN;
 		}
 	}
@@ -117,15 +113,12 @@ static int eqm_decryption_mmap(struct file* pf, struct vm_area_struct* vma)
 			list_del(list_node);
 			if (remap_pfn_range(vma, vma->vm_start + i * PAGE_SIZE, 
 				page_to_pfn(eqm->bi_io_vec->bv_page), PAGE_SIZE, vma->vm_page_prot)) {
-				spin_unlock(&g_de_data_spinlock);
 				return -EAGAIN;
 			}
 			i++;		
 			kfree(eqm);			
 		}
 	}
-
-  	spin_unlock(&g_de_data_spinlock);	
 	return 0;
 }
 
@@ -137,7 +130,6 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 	case MISC_EQM_GET_DATA_LENGTH:
 	{
 		struct eqm_data_info info;
-		spin_lock(&g_de_data_spinlock);
 
 		if(eqm_de_only_one_page){
 			info.count = 1;
@@ -152,7 +144,6 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 			else
 				info.len = 0;
 		}
-		spin_unlock(&g_de_data_spinlock);
 		if(copy_to_user(argp, &info, sizeof(struct eqm_data_info))) {
 			printk("[Error]=copy_to_user error.\n");
 			return -EINVAL;
@@ -211,17 +202,23 @@ static int eqm_decryption_ioctl(struct inode *inode, struct file *pf, unsigned i
 
 void start_de_eqm_unplug_timer(void)
 {
-	mod_timer(&eqm_de_unplug_timer, jiffies + EQM_DECRYPTION_UNPLUG_TIMEOUT);
+	if(!eqm_de_pluged) {
+		mod_timer(&eqm_de_unplug_timer, jiffies + EQM_DECRYPTION_UNPLUG_TIMEOUT);
+		eqm_de_pluged = 1;
+	}
 }
 
 void end_de_eqm_unplug_timer(void)
 {
-	del_timer(&eqm_de_unplug_timer);
+	if(eqm_de_pluged) {
+		del_timer(&eqm_de_unplug_timer);
+		eqm_de_pluged=0;
+	}
 }
 
 static void eqm_de_blk_unplug_timeout(unsigned long data)
 {
-	end_de_eqm_unplug_timer();
+	//end_de_eqm_unplug_timer();
 	wake_up_process(decryption_thread_handle);
 }
 
@@ -253,6 +250,7 @@ static int send_decryption_data_network(void)
 	
 	spin_lock(&g_thread_spinlock);	
 	list_replace_init(&g_eqm_decryption_bio_slot, &local_list);
+	eqm_decryption_index = 0;
 	spin_unlock(&g_thread_spinlock);
 	
 	list_for_each_safe(list_node, tmp, &local_list)
@@ -260,10 +258,8 @@ static int send_decryption_data_network(void)
 		bio = list_entry(list_node, struct bio, list);
 		bio_for_each_segment(from, /*bio_array[i]*/bio, j) { 
 			if( from->bv_offset > 0 ||  from->bv_len < PAGE_SIZE) {
-				spin_lock(&g_de_data_spinlock);
 				eqm_de_only_one_page = 1;	
 				eqm_de_bio_vec = from;				
-				spin_unlock(&g_de_data_spinlock);
 				
 				err_code = wait_for_decryption_complete();
 				eqm_de_only_one_page = 0;	
@@ -277,13 +273,11 @@ static int send_decryption_data_network(void)
 				eqm = kzalloc(sizeof(struct eqm_data), GFP_KERNEL);				
 				BUG_ON(!eqm);
 				
-				spin_lock(&g_de_data_spinlock);
 				eqm->bi_io_vec = from;
 				
 				INIT_LIST_HEAD(&eqm->entry_list);
 				list_add_tail(&eqm->entry_list, &g_eqm_decryption_bio_vec_slot);
 				eqm_de_page_count ++;
-				spin_unlock(&g_de_data_spinlock);
 			}
 		}
 	}
@@ -307,9 +301,6 @@ ERROR:
 		if (bio->bi_end_io)
 			bio->bi_end_io(bio, err_code);
 	}
-
-	atomic_set(&eqm_decryption_index, 0);
-
 	return 0;
 }
 
@@ -326,12 +317,11 @@ int send_decryption_data_to_network(struct bio* bio)
 	/* 注:只有在进程上下文中，才可能使用mutex锁。而当前处理软中断上下文中，所有只能使用自旋锁 */
 	spin_lock(&g_thread_spinlock);
 	list_add_tail(&bio->list, &g_eqm_decryption_bio_slot);
-	atomic_inc(&eqm_decryption_index);
-	if(atomic_read(&eqm_decryption_index) < EQM_DECRYPTION_DATA_SIZE)
+	eqm_decryption_index ++;
+	if(eqm_decryption_index < EQM_DECRYPTION_DATA_SIZE)
 		start_de_eqm_unplug_timer();
 	else  
 	{
-		end_de_eqm_unplug_timer();		
 		wake_up_process(decryption_thread_handle);
 	}
 	spin_unlock(&g_thread_spinlock);
@@ -348,14 +338,17 @@ int send_decryption_data_to_network(struct bio* bio)
 static int decryption_request_handler(void *data)
 {
 	set_current_state(TASK_INTERRUPTIBLE);
-	while (!kthread_should_stop()) {			
-			if(!atomic_read(&eqm_decryption_index)) {
+	while (!kthread_should_stop()) {	
+			spin_lock(&g_thread_spinlock);
+			if(!eqm_decryption_index) {
+				spin_unlock(&g_thread_spinlock);
 				schedule();
 				set_current_state(TASK_INTERRUPTIBLE);
 				continue;
 			}
-
+			spin_unlock(&g_thread_spinlock);
 			__set_current_state(TASK_RUNNING);	
+			end_de_eqm_unplug_timer();	
 			send_decryption_data_network(); /* 将解密的数据映射到用户空间 */
 			__set_current_state(TASK_INTERRUPTIBLE);
 		}
@@ -380,14 +373,13 @@ static int __init eqm_decryption_module_init(void)
 	init_timer(&eqm_de_unplug_timer);
 	eqm_de_unplug_timer.function = eqm_de_blk_unplug_timeout;
 	eqm_de_unplug_timer.data 	  = 0;
-	
-	spin_lock_init(&g_de_data_spinlock);
 
 	init_waitqueue_head(&eqm_decryption_qh);
 	init_waitqueue_head(&eqm_decryption_complete_qh);
-	atomic_set(&eqm_decryption_index, 0);
+	eqm_decryption_index = 0;
 	atomic_set(&be_eqm_decryption_read, 0);
 	atomic_set(&eqm_network_status, 0);
+	eqm_de_pluged=0;
     ret = misc_register(&eqm_decryption_dev);
 	if(!ret)
 		printk(KERN_INFO"[INFO] load eqm decryption module success.\n");
